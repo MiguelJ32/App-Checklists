@@ -23,9 +23,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install customtkinter pandas openpyxl pypdf pywin32 pymupdf pillow pyinstaller
 
-    - name: Compilar ejecutable con PyInstaller
+    - name: Compilar ejecutable con PyInstaller (Modo Onedir)
       run: |
-        pyinstaller --noconsole --onefile --clean `
+        pyinstaller --noconsole --onedir --clean `
           --exclude-module matplotlib `
           --exclude-module scipy `
           --collect-data customtkinter `
