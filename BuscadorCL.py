@@ -6,24 +6,29 @@ import shutil
 import stat
 import tempfile
 import win32api
+import win32con
+import win32gui
 import win32print
+import win32ui
 import customtkinter as ctk
-from PIL import Image
+from PIL import Image, ImageOps, ImageWin
 import pandas as pd
 from pypdf import PdfWriter
 import pymupdf as fitz
 
-# Configuración visual
+# Configuración visual de CustomTkinter
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
-# Ruta donde se guardará la memoria/configuración del programa
 CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "config.json"
 )
-PASSWORD_CONFIG = "1234"  # Cambia esta clave si deseas otra contraseña de acceso
+PASSWORD_CONFIG = "Mike"
 
-# Rutas iniciales por defecto (en caso de que config.json no exista)
+ICON_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "icono2.ico"
+)
+
 DEFAULTS = {
     "RUTA_EXCEL": r"J:\1 OEE\Miguel Jacinto\Programa Check Lists\Relación CL.xlsx",
     "CARPETA_CHECKLISTS": r"J:\CL SAP ENSAMBLE",
@@ -31,7 +36,6 @@ DEFAULTS = {
 
 
 def cargar_configuracion():
-  """Carga las rutas desde el archivo JSON de memoria. Si no existe, genera uno nuevo."""
   if not os.path.exists(CONFIG_FILE):
     guardar_configuracion(DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"])
     return DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"]
@@ -48,17 +52,16 @@ def cargar_configuracion():
 
 
 def guardar_configuracion(ruta_excel, carpeta_checklists):
-  """Guarda permanentemente las rutas en el archivo config.json."""
   data = {"RUTA_EXCEL": ruta_excel, "CARPETA_CHECKLISTS": carpeta_checklists}
   try:
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
       json.dump(data, f, indent=4, ensure_ascii=False)
   except Exception as e:
-    print(f"Error al guardar configuración: {e}")
+    print(f"Error al guardar la configuración: {e}")
 
 
 def normalizar_ruta_larga(ruta):
-  r"""Convierte una ruta a absoluta y le agrega el prefijo \\?\ en Windows para soportar > 260 caracteres."""
+  r"""Convierte una ruta a absoluta y añade el prefijo \\?\ en Windows para soportar más de 260 caracteres."""
   ruta_abs = os.path.abspath(ruta)
   if os.name == "nt" and not ruta_abs.startswith("\\\\?\\"):
     return "\\\\?\\" + ruta_abs
@@ -66,12 +69,10 @@ def normalizar_ruta_larga(ruta):
 
 
 def normalizar_texto_busqueda(texto):
-  """Limpia el texto eliminando espacios, guiones (-), guiones bajos (_) y convirtiendo a mayúsculas."""
   return re.sub(r"[^A-Za-z0-9]", "", str(texto)).upper()
 
 
 def quitar_solo_lectura(ruta):
-  """Remueve el atributo de Solo Lectura (Read-Only) de un archivo en Windows."""
   try:
     os.chmod(ruta, stat.S_IWRITE)
   except Exception:
@@ -79,7 +80,6 @@ def quitar_solo_lectura(ruta):
 
 
 def ocultar_archivo_windows(ruta):
-  """Oculta el archivo temporal en el explorador de Windows."""
   try:
     if os.name == "nt":
       ctypes.windll.kernel32.SetFileAttributesW(
@@ -89,8 +89,21 @@ def ocultar_archivo_windows(ruta):
     pass
 
 
+def eliminar_temporal_seguro(ruta):
+  if not ruta or not os.path.exists(ruta):
+    return
+  try:
+    quitar_solo_lectura(ruta)
+    if os.name == "nt":
+      ctypes.windll.kernel32.SetFileAttributesW(
+          ruta.replace("\\\\?\\", ""), 0x80
+      )
+    os.remove(ruta)
+  except Exception:
+    pass
+
+
 def obtener_impresoras_sistema():
-  """Obtiene la lista de impresoras instaladas en Windows."""
   try:
     impresoras = [
         printer[2]
@@ -108,7 +121,6 @@ def obtener_impresoras_sistema():
 
 
 def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
-  """Envía el PDF a la impresora elegida forzando SIMPLEX (1 cara) y Color / B&N mediante DEVMODE en memoria."""
   hprinter = win32print.OpenPrinter(nombre_impresora)
   try:
     properties = win32print.GetPrinter(hprinter, 2)
@@ -117,27 +129,67 @@ def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
     if devmode is not None:
       devmode.Duplex = 1
       devmode.Color = 2 if a_color else 1
+      devmode.Fields |= win32con.DM_DUPLEX | win32con.DM_COLOR
+
+    hdc = win32gui.CreateDC("WINSPOOL", nombre_impresora, devmode)
+    dc = win32ui.CreateDCFromHandle(hdc)
+
+    dc.StartDoc("Paquete Checklists PDF")
 
     ruta_limpia = ruta_pdf.replace("\\\\?\\", "")
-    win32api.ShellExecute(
-        0, "printto", ruta_limpia, f'"{nombre_impresora}"', ".", 0
-    )
+    doc = fitz.open(ruta_limpia)
+
+    width_px = dc.GetDeviceCaps(win32con.PHYSICALWIDTH)
+    height_px = dc.GetDeviceCaps(win32con.PHYSICALHEIGHT)
+    dpi_x = dc.GetDeviceCaps(win32con.LOGPIXELSX)
+
+    for page_num in range(len(doc)):
+      dc.StartPage()
+      page = doc[page_num]
+
+      rect = page.rect
+      es_horizontal = rect.width > rect.height
+
+      pix = page.get_pixmap(dpi=max(dpi_x, 150))
+      img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+      # Ajuste de orientación de la imagen
+      if es_horizontal and width_px < height_px:
+        img = img.rotate(270, expand=True)
+      elif not es_horizontal and width_px > height_px:
+        img = img.rotate(90, expand=True)
+
+      if not a_color:
+        img = ImageOps.grayscale(img).convert("RGB")
+
+      dib_win = ImageWin.Dib(img)
+      dib_win.draw(hdc, (0, 0, width_px, height_px))
+
+      dc.EndPage()
+
+    doc.close()
+    dc.EndDoc()
+    dc.DeleteDC()
+
   finally:
     win32print.ClosePrinter(hprinter)
 
 
-# ==============================================================================
-# VENTANA MODAL PARA EDICIÓN DE RUTAS (CONFIGURACIÓN)
-# ==============================================================================
 class VentanaConfiguracionRutas(ctk.CTkToplevel):
 
   def __init__(self, parent, ruta_excel_actual, carpeta_pdfs_actual):
     super().__init__(parent)
 
     self.parent = parent
-    self.title("⚙️ Configuración de Rutas de Sistema")
+    self.title("⚙️ Configuración de Rutas del Sistema")
     self.geometry("750x320")
     self.minsize(650, 280)
+
+    if os.path.exists(ICON_PATH):
+      try:
+        self.iconbitmap(ICON_PATH)
+      except Exception:
+        pass
 
     self.transient(parent)
     self.grab_set()
@@ -155,13 +207,12 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
     )
     lbl_title.pack(anchor="w", padx=20, pady=(15, 10))
 
-    # Campo 1: Archivo Excel
     frame_excel = ctk.CTkFrame(self, fg_color="transparent")
     frame_excel.pack(fill="x", padx=20, pady=5)
 
     lbl_excel = ctk.CTkLabel(
         frame_excel,
-        text="Ruta Archivo Excel (Book1.xlsx):",
+        text="Ruta Archivo Excel (Relación CL.xlsx):",
         font=("Helvetica", 11, "bold"),
     )
     lbl_excel.pack(anchor="w")
@@ -180,13 +231,12 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
     )
     btn_explorar_excel.pack(side="right")
 
-    # Campo 2: Carpeta Raíz PDFs
     frame_folder = ctk.CTkFrame(self, fg_color="transparent")
     frame_folder.pack(fill="x", padx=20, pady=10)
 
     lbl_folder = ctk.CTkLabel(
         frame_folder,
-        text="Carpeta Raíz de Checklists (CL SAP):",
+        text="Carpeta Raíz de Checklists (CL SAP ENSAMBLE):",
         font=("Helvetica", 11, "bold"),
     )
     lbl_folder.pack(anchor="w")
@@ -205,7 +255,6 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
     )
     btn_explorar_folder.pack(side="right")
 
-    # Botón Guardar
     btn_guardar = ctk.CTkButton(
         self,
         text="💾 Guardar Cambios y Recargar",
@@ -241,9 +290,6 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
     self.destroy()
 
 
-# ==============================================================================
-# VENTANA FLOTANTE AMPLIADA DE SELECCIÓN Y VISTA PREVIA
-# ==============================================================================
 class VentanaSeleccionPDFs(ctk.CTkToplevel):
 
   def __init__(self, parent, no_parte, lista_archivos_pdf):
@@ -252,6 +298,12 @@ class VentanaSeleccionPDFs(ctk.CTkToplevel):
     self.title(f"Selección de Checklists - No. Parte: {no_parte}")
     self.geometry("1100x680")
     self.minsize(950, 550)
+
+    if os.path.exists(ICON_PATH):
+      try:
+        self.iconbitmap(ICON_PATH)
+      except Exception:
+        pass
 
     self.transient(parent)
     self.grab_set()
@@ -387,20 +439,23 @@ class VentanaSeleccionPDFs(ctk.CTkToplevel):
     self.destroy()
 
 
-# ==============================================================================
-# APLICACIÓN PRINCIPAL
-# ==============================================================================
 class BuscadorChecklistsApp(ctk.CTk):
 
   def __init__(self):
     super().__init__()
 
-    # Cargar rutas almacenadas en la memoria (config.json)
     self.ruta_excel, self.carpeta_raiz_pdfs = cargar_configuracion()
 
     self.title("Buscador de Checklists por Excel / No. Parte")
     self.geometry("1150x700")
     self.minsize(1000, 620)
+
+    # Asignar ícono a la ventana principal
+    if os.path.exists(ICON_PATH):
+      try:
+        self.iconbitmap(ICON_PATH)
+      except Exception:
+        pass
 
     self.df = self.cargar_excel()
     self.pdf_fusionado_temp = None
@@ -411,7 +466,6 @@ class BuscadorChecklistsApp(ctk.CTk):
 
     self._crear_interfaz()
 
-    # Atajo de teclado para administradores (Ctrl + Shift + C)
     self.bind("<Control-Shift-C>", lambda e: self.solicitar_clave_config())
 
   def cargar_excel(self):
@@ -450,7 +504,6 @@ class BuscadorChecklistsApp(ctk.CTk):
       return pd.DataFrame()
 
   def _crear_interfaz(self):
-    # 1. Barra de Búsqueda y Botón Secreto
     frame_top = ctk.CTkFrame(self, corner_radius=8)
     frame_top.pack(fill="x", padx=15, pady=(15, 10))
 
@@ -464,7 +517,6 @@ class BuscadorChecklistsApp(ctk.CTk):
     )
     lbl_instruccion.pack(side="left")
 
-    # Botón discreto de engranaje de configuración
     btn_config = ctk.CTkButton(
         frame_lbl,
         text="⚙️",
@@ -569,7 +621,6 @@ class BuscadorChecklistsApp(ctk.CTk):
     self.ejecutar_filtrado()
 
   def solicitar_clave_config(self):
-    """Solicita clave de acceso para autorizar la edición de rutas."""
     dialog = ctk.CTkInputDialog(
         text="Ingrese la contraseña de administrador:",
         title="Acceso Protegido",
@@ -582,17 +633,16 @@ class BuscadorChecklistsApp(ctk.CTk):
       )
     elif clave_ingresada is not None:
       self.limpiar_log()
-      self.log("❌ Contraseña incorrecta para el menú de rutas.")
+      self.log("❌ Contraseña incorrecta.")
 
   def actualizar_rutas_configuradas(
       self, nueva_ruta_excel, nueva_carpeta_pdfs
   ):
-    """Actualiza las variables de memoria interna y recarga el Excel."""
     self.ruta_excel = nueva_ruta_excel
     self.carpeta_raiz_pdfs = nueva_carpeta_pdfs
 
     self.limpiar_log()
-    self.log("⚙️ Rutas del sistema actualizadas exitosamente.")
+    self.log("⚙️ Rutas actualizadas correctamente.")
     self.log(f" 📄 Excel: {self.ruta_excel}")
     self.log(f" 📁 Raíz PDFs: {self.carpeta_raiz_pdfs}\n")
 
@@ -742,11 +792,8 @@ class BuscadorChecklistsApp(ctk.CTk):
     self.limpiar_log()
     self.btn_imprimir.configure(state="disabled")
 
-    if self.pdf_fusionado_temp and os.path.exists(self.pdf_fusionado_temp):
-      try:
-        os.remove(self.pdf_fusionado_temp)
-      except Exception:
-        pass
+    if self.pdf_fusionado_temp:
+      eliminar_temporal_seguro(self.pdf_fusionado_temp)
     self.pdf_fusionado_temp = None
 
     self.log(f"🎯 No. Parte: '{no_parte_seleccionado}'\n")
@@ -805,9 +852,12 @@ class BuscadorChecklistsApp(ctk.CTk):
       for pdf in pdfs_a_fusionar:
         merger.append(pdf)
 
-      ruta_salida = normalizar_ruta_larga(
-          os.path.join(tempfile.gettempdir(), ".paquete_impresion_temp.pdf")
-      )
+      temp_dir = tempfile.gettempdir()
+      ruta_salida_raw = os.path.join(temp_dir, "paquete_impresion_temp.pdf")
+
+      eliminar_temporal_seguro(ruta_salida_raw)
+
+      ruta_salida = normalizar_ruta_larga(ruta_salida_raw)
       merger.write(ruta_salida)
       merger.close()
 
@@ -850,9 +900,6 @@ class BuscadorChecklistsApp(ctk.CTk):
       self.log(f"❌ Error al enviar a la impresora: {e}")
 
 
-# ==============================================================================
-# CONFIGURACIÓN Y EJECUCIÓN
-# ==============================================================================
 if __name__ == "__main__":
   app = BuscadorChecklistsApp()
   app.mainloop()
