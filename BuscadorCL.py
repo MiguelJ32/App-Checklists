@@ -1,4 +1,5 @@
 import ctypes
+import json
 import os
 import re
 import shutil
@@ -15,6 +16,45 @@ import pymupdf as fitz
 # Configuración visual
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
+
+# Ruta donde se guardará la memoria/configuración del programa
+CONFIG_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "config.json"
+)
+PASSWORD_CONFIG = "1234"  # Cambia esta clave si deseas otra contraseña de acceso
+
+# Rutas iniciales por defecto (en caso de que config.json no exista)
+DEFAULTS = {
+    "RUTA_EXCEL": r"J:\1 OEE\Miguel Jacinto\Programa Check Lists\Relación CL.xlsx",
+    "CARPETA_CHECKLISTS": r"J:\CL SAP ENSAMBLE",
+}
+
+
+def cargar_configuracion():
+  """Carga las rutas desde el archivo JSON de memoria. Si no existe, genera uno nuevo."""
+  if not os.path.exists(CONFIG_FILE):
+    guardar_configuracion(DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"])
+    return DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"]
+
+  try:
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+      data = json.load(f)
+      return (
+          data.get("RUTA_EXCEL", DEFAULTS["RUTA_EXCEL"]),
+          data.get("CARPETA_CHECKLISTS", DEFAULTS["CARPETA_CHECKLISTS"]),
+      )
+  except Exception:
+    return DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"]
+
+
+def guardar_configuracion(ruta_excel, carpeta_checklists):
+  """Guarda permanentemente las rutas en el archivo config.json."""
+  data = {"RUTA_EXCEL": ruta_excel, "CARPETA_CHECKLISTS": carpeta_checklists}
+  try:
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+      json.dump(data, f, indent=4, ensure_ascii=False)
+  except Exception as e:
+    print(f"Error al guardar configuración: {e}")
 
 
 def normalizar_ruta_larga(ruta):
@@ -75,8 +115,8 @@ def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
     devmode = properties["pDevMode"]
 
     if devmode is not None:
-      devmode.Duplex = 1  # 1 = Simplex
-      devmode.Color = 2 if a_color else 1  # 2 = Color, 1 = B&N
+      devmode.Duplex = 1
+      devmode.Color = 2 if a_color else 1
 
     ruta_limpia = ruta_pdf.replace("\\\\?\\", "")
     win32api.ShellExecute(
@@ -84,6 +124,121 @@ def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
     )
   finally:
     win32print.ClosePrinter(hprinter)
+
+
+# ==============================================================================
+# VENTANA MODAL PARA EDICIÓN DE RUTAS (CONFIGURACIÓN)
+# ==============================================================================
+class VentanaConfiguracionRutas(ctk.CTkToplevel):
+
+  def __init__(self, parent, ruta_excel_actual, carpeta_pdfs_actual):
+    super().__init__(parent)
+
+    self.parent = parent
+    self.title("⚙️ Configuración de Rutas de Sistema")
+    self.geometry("750x320")
+    self.minsize(650, 280)
+
+    self.transient(parent)
+    self.grab_set()
+
+    self.ruta_excel_val = ctk.StringVar(value=ruta_excel_actual)
+    self.carpeta_pdfs_val = ctk.StringVar(value=carpeta_pdfs_actual)
+
+    self._crear_interfaz()
+
+  def _crear_interfaz(self):
+    lbl_title = ctk.CTkLabel(
+        self,
+        text="Modificación de Rutas de Archivos y Archivos PDF",
+        font=("Helvetica", 14, "bold"),
+    )
+    lbl_title.pack(anchor="w", padx=20, pady=(15, 10))
+
+    # Campo 1: Archivo Excel
+    frame_excel = ctk.CTkFrame(self, fg_color="transparent")
+    frame_excel.pack(fill="x", padx=20, pady=5)
+
+    lbl_excel = ctk.CTkLabel(
+        frame_excel,
+        text="Ruta Archivo Excel (Book1.xlsx):",
+        font=("Helvetica", 11, "bold"),
+    )
+    lbl_excel.pack(anchor="w")
+
+    entry_excel = ctk.CTkEntry(
+        frame_excel, textvariable=self.ruta_excel_val, height=35
+    )
+    entry_excel.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+    btn_explorar_excel = ctk.CTkButton(
+        frame_excel,
+        text="📁 Buscar...",
+        width=100,
+        height=35,
+        command=self.buscar_excel,
+    )
+    btn_explorar_excel.pack(side="right")
+
+    # Campo 2: Carpeta Raíz PDFs
+    frame_folder = ctk.CTkFrame(self, fg_color="transparent")
+    frame_folder.pack(fill="x", padx=20, pady=10)
+
+    lbl_folder = ctk.CTkLabel(
+        frame_folder,
+        text="Carpeta Raíz de Checklists (CL SAP):",
+        font=("Helvetica", 11, "bold"),
+    )
+    lbl_folder.pack(anchor="w")
+
+    entry_folder = ctk.CTkEntry(
+        frame_folder, textvariable=self.carpeta_pdfs_val, height=35
+    )
+    entry_folder.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+    btn_explorar_folder = ctk.CTkButton(
+        frame_folder,
+        text="📂 Buscar...",
+        width=100,
+        height=35,
+        command=self.buscar_carpeta,
+    )
+    btn_explorar_folder.pack(side="right")
+
+    # Botón Guardar
+    btn_guardar = ctk.CTkButton(
+        self,
+        text="💾 Guardar Cambios y Recargar",
+        height=40,
+        font=("Helvetica", 13, "bold"),
+        fg_color="#2E7D32",
+        hover_color="#1B5E20",
+        command=self.guardar_y_cerrar,
+    )
+    btn_guardar.pack(fill="x", padx=20, pady=(15, 10))
+
+  def buscar_excel(self):
+    archivo = ctk.filedialog.askopenfilename(
+        title="Seleccionar Archivo Excel",
+        filetypes=[("Archivos Excel", "*.xlsx *.xls")],
+    )
+    if archivo:
+      self.ruta_excel_val.set(archivo)
+
+  def buscar_carpeta(self):
+    carpeta = ctk.filedialog.askdirectory(
+        title="Seleccionar Carpeta Raíz de Checklists"
+    )
+    if carpeta:
+      self.carpeta_pdfs_val.set(carpeta)
+
+  def guardar_y_cerrar(self):
+    nueva_ruta_excel = self.ruta_excel_val.get().strip()
+    nueva_carpeta = self.carpeta_pdfs_val.get().strip()
+
+    guardar_configuracion(nueva_ruta_excel, nueva_carpeta)
+    self.parent.actualizar_rutas_configuradas(nueva_ruta_excel, nueva_carpeta)
+    self.destroy()
 
 
 # ==============================================================================
@@ -237,15 +392,15 @@ class VentanaSeleccionPDFs(ctk.CTkToplevel):
 # ==============================================================================
 class BuscadorChecklistsApp(ctk.CTk):
 
-  def __init__(self, ruta_excel, carpeta_raiz_pdfs):
+  def __init__(self):
     super().__init__()
+
+    # Cargar rutas almacenadas en la memoria (config.json)
+    self.ruta_excel, self.carpeta_raiz_pdfs = cargar_configuracion()
 
     self.title("Buscador de Checklists por Excel / No. Parte")
     self.geometry("1150x700")
     self.minsize(1000, 620)
-
-    self.ruta_excel = ruta_excel
-    self.carpeta_raiz_pdfs = carpeta_raiz_pdfs
 
     self.df = self.cargar_excel()
     self.pdf_fusionado_temp = None
@@ -255,6 +410,9 @@ class BuscadorChecklistsApp(ctk.CTk):
     self.tarjeta_seleccionada = None
 
     self._crear_interfaz()
+
+    # Atajo de teclado para administradores (Ctrl + Shift + C)
+    self.bind("<Control-Shift-C>", lambda e: self.solicitar_clave_config())
 
   def cargar_excel(self):
     try:
@@ -292,15 +450,32 @@ class BuscadorChecklistsApp(ctk.CTk):
       return pd.DataFrame()
 
   def _crear_interfaz(self):
+    # 1. Barra de Búsqueda y Botón Secreto
     frame_top = ctk.CTkFrame(self, corner_radius=8)
     frame_top.pack(fill="x", padx=15, pady=(15, 10))
 
+    frame_lbl = ctk.CTkFrame(frame_top, fg_color="transparent")
+    frame_lbl.pack(fill="x", padx=15, pady=(8, 2))
+
     lbl_instruccion = ctk.CTkLabel(
-        frame_top,
+        frame_lbl,
         text="🔍 Buscar por SO, VCP, Máquina o No. Parte:",
         font=("Helvetica", 14, "bold"),
     )
-    lbl_instruccion.pack(anchor="w", padx=15, pady=(10, 4))
+    lbl_instruccion.pack(side="left")
+
+    # Botón discreto de engranaje de configuración
+    btn_config = ctk.CTkButton(
+        frame_lbl,
+        text="⚙️",
+        width=32,
+        height=28,
+        fg_color="transparent",
+        hover_color="#E2E8F0",
+        text_color="#64748B",
+        command=self.solicitar_clave_config,
+    )
+    btn_config.pack(side="right")
 
     self.entry_busqueda = ctk.CTkEntry(
         frame_top,
@@ -393,6 +568,37 @@ class BuscadorChecklistsApp(ctk.CTk):
 
     self.ejecutar_filtrado()
 
+  def solicitar_clave_config(self):
+    """Solicita clave de acceso para autorizar la edición de rutas."""
+    dialog = ctk.CTkInputDialog(
+        text="Ingrese la contraseña de administrador:",
+        title="Acceso Protegido",
+    )
+    clave_ingresada = dialog.get_input()
+
+    if clave_ingresada == PASSWORD_CONFIG:
+      VentanaConfiguracionRutas(
+          self, self.ruta_excel, self.carpeta_raiz_pdfs
+      )
+    elif clave_ingresada is not None:
+      self.limpiar_log()
+      self.log("❌ Contraseña incorrecta para el menú de rutas.")
+
+  def actualizar_rutas_configuradas(
+      self, nueva_ruta_excel, nueva_carpeta_pdfs
+  ):
+    """Actualiza las variables de memoria interna y recarga el Excel."""
+    self.ruta_excel = nueva_ruta_excel
+    self.carpeta_raiz_pdfs = nueva_carpeta_pdfs
+
+    self.limpiar_log()
+    self.log("⚙️ Rutas del sistema actualizadas exitosamente.")
+    self.log(f" 📄 Excel: {self.ruta_excel}")
+    self.log(f" 📁 Raíz PDFs: {self.carpeta_raiz_pdfs}\n")
+
+    self.df = self.cargar_excel()
+    self.ejecutar_filtrado()
+
   def _on_key_release_debounce(self, event=None):
     if self._timer_busqueda is not None:
       self.after_cancel(self._timer_busqueda)
@@ -426,7 +632,8 @@ class BuscadorChecklistsApp(ctk.CTk):
 
     if self.df.empty:
       ctk.CTkLabel(
-          self.scroll_coincidencias, text="No se pudo cargar el archivo Excel."
+          self.scroll_coincidencias,
+          text="No se pudo cargar el archivo Excel.\nVerifique la ruta en ⚙️.",
       ).pack(pady=20)
       return
 
@@ -535,7 +742,6 @@ class BuscadorChecklistsApp(ctk.CTk):
     self.limpiar_log()
     self.btn_imprimir.configure(state="disabled")
 
-    # Si existía un archivo PDF temporal previo, lo eliminamos
     if self.pdf_fusionado_temp and os.path.exists(self.pdf_fusionado_temp):
       try:
         os.remove(self.pdf_fusionado_temp)
@@ -599,14 +805,12 @@ class BuscadorChecklistsApp(ctk.CTk):
       for pdf in pdfs_a_fusionar:
         merger.append(pdf)
 
-      # Ruta temporal oculta dentro del directorio temporal de Windows
       ruta_salida = normalizar_ruta_larga(
           os.path.join(tempfile.gettempdir(), ".paquete_impresion_temp.pdf")
       )
       merger.write(ruta_salida)
       merger.close()
 
-      # Asignar atributo de archivo oculto
       ocultar_archivo_windows(ruta_salida)
 
       self.pdf_fusionado_temp = ruta_salida
@@ -650,10 +854,5 @@ class BuscadorChecklistsApp(ctk.CTk):
 # CONFIGURACIÓN Y EJECUCIÓN
 # ==============================================================================
 if __name__ == "__main__":
-  RUTA_EXCEL = r"J:\1 OEE\Miguel Jacinto\Programa Check Lists\Relación CL.xlsx"
-  CARPETA_CHECKLISTS = r"J:\CL SAP ENSAMBLE"
-
-  app = BuscadorChecklistsApp(
-      ruta_excel=RUTA_EXCEL, carpeta_raiz_pdfs=CARPETA_CHECKLISTS
-  )
+  app = BuscadorChecklistsApp()
   app.mainloop()
