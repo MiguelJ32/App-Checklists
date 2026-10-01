@@ -1,1 +1,47 @@
+name: Compilar BuscadorCL Executable
 
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout del código
+      uses: actions/checkout@v4
+
+    - name: Configurar Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Instalar dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install customtkinter pandas openpyxl pypdf pywin32 pymupdf pillow pyinstaller
+
+    - name: Limpiar artefactos de compilaciones anteriores (Ahorro de espacio)
+      uses: geekyeggo/delete-artifact@v5
+      with:
+        name: BuscadorCL-Windows
+      continue-on-error: true
+
+    - name: Compilar ejecutable con PyInstaller (Modo Onedir con Ícono)
+      run: |
+        pyinstaller --noconsole --onedir --clean `
+          --icon=logo2.ico `
+          --add-data "logo2.ico;." `
+          --exclude-module matplotlib `
+          --exclude-module scipy `
+          --collect-data customtkinter `
+          --name "BuscadorCL" BuscadorCL.py
+
+    - name: Subir ejecutable como Artefacto (Auto-eliminación en 24h)
+      uses: actions/upload-artifact@v4
+      with:
+        name: BuscadorCL-Windows
+        path: dist/BuscadorCL
+        retention-days: 1   # 👈 Solo conserva el ejecutable 1 día para no llenar tus 0.5 GB
