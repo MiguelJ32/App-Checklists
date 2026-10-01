@@ -26,7 +26,7 @@ CONFIG_FILE = os.path.join(
 PASSWORD_CONFIG = "Mike"
 
 ICON_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "icono2.ico"
+    os.path.dirname(os.path.abspath(__file__)), "logo2.ico"
 )
 
 DEFAULTS = {
