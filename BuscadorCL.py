@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import win32api
 import win32con
@@ -20,25 +21,46 @@ import pymupdf as fitz
 ctk.set_appearance_mode("Light")
 ctk.set_default_color_theme("blue")
 
+
+def obtener_ruta_recurso(nombre_archivo):
+  """Obtiene la ruta absoluta del recurso, compatible con desarrollo y PyInstaller (--onedir / --onefile)."""
+  if hasattr(sys, "_MEIPASS"):
+    return os.path.join(sys._MEIPASS, nombre_archivo)
+  return os.path.join(os.path.dirname(os.path.abspath(__file__)), nombre_archivo)
+
+
 CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "config.json"
 )
 PASSWORD_CONFIG = "Mike"
-
-ICON_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "logo2.ico"
-)
+ICON_PATH = obtener_ruta_recurso("logo2.ico")
 
 DEFAULTS = {
-    "RUTA_EXCEL": r"J:\1 OEE\Miguel Jacinto\Programa Check Lists\Relación CL.xlsx",
+    "RUTA_EXCEL": r"J:\1 OEE\Miguel Jacinto\Programas\BuscadorCL-Windows\Relación CL.xlsx",
     "CARPETA_CHECKLISTS": r"J:\CL SAP ENSAMBLE",
+    "PERMITIR_COLOR": False,  # Por defecto bloqueado a solo Blanco y Negro
+    "IMPRESORA_PREDETERMINADA": "",
 }
 
 
 def cargar_configuracion():
+  """Carga las configuraciones desde config.json.
+
+  Si no existe, lo crea con valores por defecto.
+  """
   if not os.path.exists(CONFIG_FILE):
-    guardar_configuracion(DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"])
-    return DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"]
+    guardar_configuracion(
+        DEFAULTS["RUTA_EXCEL"],
+        DEFAULTS["CARPETA_CHECKLISTS"],
+        DEFAULTS["PERMITIR_COLOR"],
+        DEFAULTS["IMPRESORA_PREDETERMINADA"],
+    )
+    return (
+        DEFAULTS["RUTA_EXCEL"],
+        DEFAULTS["CARPETA_CHECKLISTS"],
+        DEFAULTS["PERMITIR_COLOR"],
+        DEFAULTS["IMPRESORA_PREDETERMINADA"],
+    )
 
   try:
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -46,13 +68,33 @@ def cargar_configuracion():
       return (
           data.get("RUTA_EXCEL", DEFAULTS["RUTA_EXCEL"]),
           data.get("CARPETA_CHECKLISTS", DEFAULTS["CARPETA_CHECKLISTS"]),
+          data.get("PERMITIR_COLOR", DEFAULTS["PERMITIR_COLOR"]),
+          data.get(
+              "IMPRESORA_PREDETERMINADA", DEFAULTS["IMPRESORA_PREDETERMINADA"]
+          ),
       )
   except Exception:
-    return DEFAULTS["RUTA_EXCEL"], DEFAULTS["CARPETA_CHECKLISTS"]
+    return (
+        DEFAULTS["RUTA_EXCEL"],
+        DEFAULTS["CARPETA_CHECKLISTS"],
+        DEFAULTS["PERMITIR_COLOR"],
+        DEFAULTS["IMPRESORA_PREDETERMINADA"],
+    )
 
 
-def guardar_configuracion(ruta_excel, carpeta_checklists):
-  data = {"RUTA_EXCEL": ruta_excel, "CARPETA_CHECKLISTS": carpeta_checklists}
+def guardar_configuracion(
+    ruta_excel,
+    carpeta_checklists,
+    permitir_color=False,
+    impresora_predeterminada="",
+):
+  """Guarda la configuración de forma persistente en config.json."""
+  data = {
+      "RUTA_EXCEL": ruta_excel,
+      "CARPETA_CHECKLISTS": carpeta_checklists,
+      "PERMITIR_COLOR": permitir_color,
+      "IMPRESORA_PREDETERMINADA": impresora_predeterminada,
+  }
   try:
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
       json.dump(data, f, indent=4, ensure_ascii=False)
@@ -61,7 +103,7 @@ def guardar_configuracion(ruta_excel, carpeta_checklists):
 
 
 def normalizar_ruta_larga(ruta):
-  r"""Convierte una ruta a absoluta y añade el prefijo \\?\ en Windows para soportar más de 260 caracteres."""
+  r"""Convierte una ruta a absoluta y añade el prefijo \\?\ en Windows para soportar rutas largas."""
   ruta_abs = os.path.abspath(ruta)
   if os.name == "nt" and not ruta_abs.startswith("\\\\?\\"):
     return "\\\\?\\" + ruta_abs
@@ -127,8 +169,8 @@ def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
     devmode = properties["pDevMode"]
 
     if devmode is not None:
-      devmode.Duplex = 1
-      devmode.Color = 2 if a_color else 1
+      devmode.Duplex = 1  # 1 = Simplex (una cara)
+      devmode.Color = 2 if a_color else 1  # 2 = Color, 1 = B&N
       devmode.Fields |= win32con.DM_DUPLEX | win32con.DM_COLOR
 
     hdc = win32gui.CreateDC("WINSPOOL", nombre_impresora, devmode)
@@ -153,7 +195,7 @@ def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
       pix = page.get_pixmap(dpi=max(dpi_x, 150))
       img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-      # Ajuste de orientación de la imagen
+      # Ajuste automático de orientación (Vertical vs Horizontal)
       if es_horizontal and width_px < height_px:
         img = img.rotate(270, expand=True)
       elif not es_horizontal and width_px > height_px:
@@ -175,15 +217,24 @@ def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
     win32print.ClosePrinter(hprinter)
 
 
+# ==============================================================================
+# VENTANA MODAL DE CONFIGURACIÓN
+# ==============================================================================
 class VentanaConfiguracionRutas(ctk.CTkToplevel):
 
-  def __init__(self, parent, ruta_excel_actual, carpeta_pdfs_actual):
+  def __init__(
+      self,
+      parent,
+      ruta_excel_actual,
+      carpeta_pdfs_actual,
+      permitir_color_actual,
+  ):
     super().__init__(parent)
 
     self.parent = parent
-    self.title("⚙️ Configuración de Rutas del Sistema")
-    self.geometry("750x320")
-    self.minsize(650, 280)
+    self.title("⚙️ Configuración del Sistema (Administrador)")
+    self.geometry("750x390")
+    self.minsize(650, 350)
 
     if os.path.exists(ICON_PATH):
       try:
@@ -196,17 +247,19 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
 
     self.ruta_excel_val = ctk.StringVar(value=ruta_excel_actual)
     self.carpeta_pdfs_val = ctk.StringVar(value=carpeta_pdfs_actual)
+    self.permitir_color_val = ctk.BooleanVar(value=permitir_color_actual)
 
     self._crear_interfaz()
 
   def _crear_interfaz(self):
     lbl_title = ctk.CTkLabel(
         self,
-        text="Modificación de Rutas de Archivos y Archivos PDF",
+        text="Ajustes Generales del Sistema",
         font=("Helvetica", 14, "bold"),
     )
     lbl_title.pack(anchor="w", padx=20, pady=(15, 10))
 
+    # Campo 1: Ruta Excel
     frame_excel = ctk.CTkFrame(self, fg_color="transparent")
     frame_excel.pack(fill="x", padx=20, pady=5)
 
@@ -231,6 +284,7 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
     )
     btn_explorar_excel.pack(side="right")
 
+    # Campo 2: Carpeta Raíz PDFs
     frame_folder = ctk.CTkFrame(self, fg_color="transparent")
     frame_folder.pack(fill="x", padx=20, pady=10)
 
@@ -255,10 +309,25 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
     )
     btn_explorar_folder.pack(side="right")
 
+    # Campo 3: Interruptor para Habilitar/Bloquear Impresión a Color
+    frame_color_opt = ctk.CTkFrame(self, fg_color="transparent")
+    frame_color_opt.pack(fill="x", padx=20, pady=10)
+
+    self.switch_color = ctk.CTkSwitch(
+        frame_color_opt,
+        text=" Habilitar Opción de Impresión a Color para Operadores",
+        variable=self.permitir_color_val,
+        font=("Helvetica", 12, "bold"),
+        onvalue=True,
+        offvalue=False,
+    )
+    self.switch_color.pack(anchor="w")
+
+    # Botón Guardar
     btn_guardar = ctk.CTkButton(
         self,
-        text="💾 Guardar Cambios y Recargar",
-        height=40,
+        text="💾 Guardar Configuración y Recargar",
+        height=42,
         font=("Helvetica", 13, "bold"),
         fg_color="#2E7D32",
         hover_color="#1B5E20",
@@ -284,12 +353,25 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
   def guardar_y_cerrar(self):
     nueva_ruta_excel = self.ruta_excel_val.get().strip()
     nueva_carpeta = self.carpeta_pdfs_val.get().strip()
+    nuevo_permitir_color = self.permitir_color_val.get()
 
-    guardar_configuracion(nueva_ruta_excel, nueva_carpeta)
-    self.parent.actualizar_rutas_configuradas(nueva_ruta_excel, nueva_carpeta)
+    impresora_actual = self.parent.combo_impresora.get()
+
+    guardar_configuracion(
+        nueva_ruta_excel,
+        nueva_carpeta,
+        nuevo_permitir_color,
+        impresora_actual,
+    )
+    self.parent.actualizar_rutas_configuradas(
+        nueva_ruta_excel, nueva_carpeta, nuevo_permitir_color
+    )
     self.destroy()
 
 
+# ==============================================================================
+# VENTANA MODAL DE VISTA PREVIA Y SELECCIÓN DE PDFS
+# ==============================================================================
 class VentanaSeleccionPDFs(ctk.CTkToplevel):
 
   def __init__(self, parent, no_parte, lista_archivos_pdf):
@@ -439,18 +521,25 @@ class VentanaSeleccionPDFs(ctk.CTkToplevel):
     self.destroy()
 
 
+# ==============================================================================
+# APLICACIÓN PRINCIPAL
+# ==============================================================================
 class BuscadorChecklistsApp(ctk.CTk):
 
   def __init__(self):
     super().__init__()
 
-    self.ruta_excel, self.carpeta_raiz_pdfs = cargar_configuracion()
+    (
+        self.ruta_excel,
+        self.carpeta_raiz_pdfs,
+        self.permitir_color,
+        self.impresora_predeterminada,
+    ) = cargar_configuracion()
 
     self.title("Buscador de Checklists por Excel / No. Parte")
     self.geometry("1150x700")
     self.minsize(1000, 620)
 
-    # Asignar ícono a la ventana principal
     if os.path.exists(ICON_PATH):
       try:
         self.iconbitmap(ICON_PATH)
@@ -579,29 +668,38 @@ class BuscadorChecklistsApp(ctk.CTk):
         width=300,
         font=("Helvetica", 12),
         state="readonly",
+        command=self.al_cambiar_impresora,
     )
     self.combo_impresora.pack(side="left", padx=5, pady=10)
     self.combo_impresora.bind(
         "<Button-1>", lambda e: self.combo_impresora._open_dropdown_menu()
     )
 
-    lbl_color = ctk.CTkLabel(
+    if (
+        self.impresora_predeterminada
+        and self.impresora_predeterminada in lista_impresoras
+    ):
+      self.combo_impresora.set(self.impresora_predeterminada)
+
+    # --- Selector de Color dinámico ---
+    self.lbl_color = ctk.CTkLabel(
         frame_options, text="🎨 Color:", font=("Helvetica", 12, "bold")
     )
-    lbl_color.pack(side="left", padx=(20, 5), pady=10)
 
     self.combo_color = ctk.CTkComboBox(
         frame_options,
-        values=["Color", "Blanco y Negro"],
+        values=["Blanco y Negro", "Color"],
         width=180,
         font=("Helvetica", 12),
         state="readonly",
     )
-    self.combo_color.set("Color")
-    self.combo_color.pack(side="left", padx=5, pady=10)
+    self.combo_color.set("Blanco y Negro")
     self.combo_color.bind(
         "<Button-1>", lambda e: self.combo_color._open_dropdown_menu()
     )
+
+    # Mostrar u ocultar el campo de color según config.json
+    self.actualizar_estado_selector_color()
 
     frame_bottom = ctk.CTkFrame(self, fg_color="transparent")
     frame_bottom.pack(fill="x", padx=15, pady=(0, 15))
@@ -620,6 +718,25 @@ class BuscadorChecklistsApp(ctk.CTk):
 
     self.ejecutar_filtrado()
 
+  def actualizar_estado_selector_color(self):
+    """Muestra u oculta dinámicamente el campo de selección de color según config.json."""
+    if not self.permitir_color:
+      self.lbl_color.pack_forget()
+      self.combo_color.pack_forget()
+      self.combo_color.set("Blanco y Negro")
+    else:
+      self.lbl_color.pack(side="left", padx=(20, 5), pady=10)
+      self.combo_color.pack(side="left", padx=5, pady=10)
+      self.combo_color.set("Blanco y Negro")
+
+  def al_cambiar_impresora(self, impresora_seleccionada):
+    guardar_configuracion(
+        self.ruta_excel,
+        self.carpeta_raiz_pdfs,
+        self.permitir_color,
+        impresora_seleccionada,
+    )
+
   def solicitar_clave_config(self):
     dialog = ctk.CTkInputDialog(
         text="Ingrese la contraseña de administrador:",
@@ -629,22 +746,32 @@ class BuscadorChecklistsApp(ctk.CTk):
 
     if clave_ingresada == PASSWORD_CONFIG:
       VentanaConfiguracionRutas(
-          self, self.ruta_excel, self.carpeta_raiz_pdfs
+          self,
+          self.ruta_excel,
+          self.carpeta_raiz_pdfs,
+          self.permitir_color,
       )
     elif clave_ingresada is not None:
       self.limpiar_log()
       self.log("❌ Contraseña incorrecta.")
 
   def actualizar_rutas_configuradas(
-      self, nueva_ruta_excel, nueva_carpeta_pdfs
+      self, nueva_ruta_excel, nueva_carpeta_pdfs, nuevo_permitir_color
   ):
     self.ruta_excel = nueva_ruta_excel
     self.carpeta_raiz_pdfs = nueva_carpeta_pdfs
+    self.permitir_color = nuevo_permitir_color
+
+    self.actualizar_estado_selector_color()
 
     self.limpiar_log()
-    self.log("⚙️ Rutas actualizadas correctamente.")
+    self.log("⚙️ Configuración actualizada correctamente.")
     self.log(f" 📄 Excel: {self.ruta_excel}")
-    self.log(f" 📁 Raíz PDFs: {self.carpeta_raiz_pdfs}\n")
+    self.log(f" 📁 Raíz PDFs: {self.carpeta_raiz_pdfs}")
+    self.log(
+        " 🎨 Modo Color:"
+        f" {'Habilitado' if self.permitir_color else 'Oculto (Solo B&N)'}\n"
+    )
 
     self.df = self.cargar_excel()
     self.ejecutar_filtrado()
@@ -882,7 +1009,7 @@ class BuscadorChecklistsApp(ctk.CTk):
       return
 
     impresora_sel = self.combo_impresora.get()
-    modo_color = self.combo_color.get()
+    modo_color = self.combo_color.get() if self.permitir_color else "Blanco y Negro"
     es_color = modo_color == "Color"
 
     try:
