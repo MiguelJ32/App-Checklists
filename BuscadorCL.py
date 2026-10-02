@@ -14,7 +14,6 @@ import win32ui
 import customtkinter as ctk
 from PIL import Image, ImageOps, ImageWin
 import pandas as pd
-from pypdf import PdfWriter
 import pymupdf as fitz
 
 # Configuración visual de CustomTkinter
@@ -44,10 +43,7 @@ DEFAULTS = {
 
 
 def cargar_configuracion():
-  """Carga las configuraciones desde config.json.
-
-  Si no existe, lo crea con valores por defecto.
-  """
+  """Carga las configuraciones desde config.json. Si no existe, lo crea con valores por defecto."""
   if not os.path.exists(CONFIG_FILE):
     guardar_configuracion(
         DEFAULTS["RUTA_EXCEL"],
@@ -121,30 +117,6 @@ def quitar_solo_lectura(ruta):
     pass
 
 
-def ocultar_archivo_windows(ruta):
-  try:
-    if os.name == "nt":
-      ctypes.windll.kernel32.SetFileAttributesW(
-          ruta.replace("\\\\?\\", ""), 0x02
-      )
-  except Exception:
-    pass
-
-
-def eliminar_temporal_seguro(ruta):
-  if not ruta or not os.path.exists(ruta):
-    return
-  try:
-    quitar_solo_lectura(ruta)
-    if os.name == "nt":
-      ctypes.windll.kernel32.SetFileAttributesW(
-          ruta.replace("\\\\?\\", ""), 0x80
-      )
-    os.remove(ruta)
-  except Exception:
-    pass
-
-
 def obtener_impresoras_sistema():
   try:
     impresoras = [
@@ -162,55 +134,71 @@ def obtener_impresoras_sistema():
     return ["Impresora Predeterminada"]
 
 
-def mandar_a_imprimir_configurado(ruta_pdf, nombre_impresora, a_color=True):
+def mandar_a_imprimir_configurado(lista_pdfs, nombre_impresora, a_color=True):
+  """Envía cada PDF como un trabajo de impresión independiente para respetar el Dúplex por documento."""
   hprinter = win32print.OpenPrinter(nombre_impresora)
   try:
     properties = win32print.GetPrinter(hprinter, 2)
     devmode = properties["pDevMode"]
 
     if devmode is not None:
-      devmode.Duplex = 1  # 1 = Simplex (una cara)
+      # 2 = DMDUP_VERTICAL (Dúplex por el borde largo / ambos lados si el doc tiene 2+ páginas)
+      devmode.Duplex = 2
       devmode.Color = 2 if a_color else 1  # 2 = Color, 1 = B&N
       devmode.Fields |= win32con.DM_DUPLEX | win32con.DM_COLOR
 
     hdc = win32gui.CreateDC("WINSPOOL", nombre_impresora, devmode)
     dc = win32ui.CreateDCFromHandle(hdc)
 
-    dc.StartDoc("Paquete Checklists PDF")
-
-    ruta_limpia = ruta_pdf.replace("\\\\?\\", "")
-    doc = fitz.open(ruta_limpia)
-
     width_px = dc.GetDeviceCaps(win32con.PHYSICALWIDTH)
     height_px = dc.GetDeviceCaps(win32con.PHYSICALHEIGHT)
     dpi_x = dc.GetDeviceCaps(win32con.LOGPIXELSX)
 
-    for page_num in range(len(doc)):
-      dc.StartPage()
-      page = doc[page_num]
+    # Margen de seguridad del 2.5% por lado (Escala al 95% centrada)
+    factor_escala = 0.95
+    print_w = int(width_px * factor_escala)
+    print_h = int(height_px * factor_escala)
+    offset_x = (width_px - print_w) // 2
+    offset_y = (height_px - print_h) // 2
 
-      rect = page.rect
-      es_horizontal = rect.width > rect.height
+    # Procesar cada archivo PDF de manera individual
+    for idx, ruta_pdf in enumerate(lista_pdfs, 1):
+      ruta_limpia = ruta_pdf.replace("\\\\?\\", "")
+      doc = fitz.open(ruta_limpia)
 
-      pix = page.get_pixmap(dpi=max(dpi_x, 150))
-      img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+      # Iniciar un trabajo de impresión independiente en la cola de Windows
+      dc.StartDoc(f"Checklist Documento {idx}")
 
-      # Ajuste automático de orientación (Vertical vs Horizontal)
-      if es_horizontal and width_px < height_px:
-        img = img.rotate(270, expand=True)
-      elif not es_horizontal and width_px > height_px:
-        img = img.rotate(90, expand=True)
+      for page_num in range(len(doc)):
+        dc.StartPage()
+        page = doc[page_num]
 
-      if not a_color:
-        img = ImageOps.grayscale(img).convert("RGB")
+        rect = page.rect
+        es_horizontal = rect.width > rect.height
 
-      dib_win = ImageWin.Dib(img)
-      dib_win.draw(hdc, (0, 0, width_px, height_px))
+        pix = page.get_pixmap(dpi=max(dpi_x, 150))
+        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
-      dc.EndPage()
+        # Ajuste automático de orientación (Vertical vs Horizontal)
+        if es_horizontal and width_px < height_px:
+          img = img.rotate(270, expand=True)
+        elif not es_horizontal and width_px > height_px:
+          img = img.rotate(90, expand=True)
 
-    doc.close()
-    dc.EndDoc()
+        if not a_color:
+          img = ImageOps.grayscale(img).convert("RGB")
+
+        dib_win = ImageWin.Dib(img)
+        # Dibujar la imagen ajustada dentro del área con margen
+        dib_win.draw(
+            hdc, (offset_x, offset_y, offset_x + print_w, offset_y + print_h)
+        )
+
+        dc.EndPage()
+
+      doc.close()
+      dc.EndDoc()  # Finaliza el trabajo actual antes de pasar al siguiente PDF
+
     dc.DeleteDC()
 
   finally:
@@ -232,7 +220,7 @@ class VentanaConfiguracionRutas(ctk.CTkToplevel):
     super().__init__(parent)
 
     self.parent = parent
-    self.title("⚙️ Configuración del Sistema (Administrador)")
+    self.title("⚙ Configuración del Sistema (Administrador)")
     self.geometry("750x390")
     self.minsize(650, 350)
 
@@ -547,7 +535,7 @@ class BuscadorChecklistsApp(ctk.CTk):
         pass
 
     self.df = self.cargar_excel()
-    self.pdf_fusionado_temp = None
+    self.pdfs_seleccionados_lista = []
     self._timer_busqueda = None
 
     self.tarjetas_creadas = []
@@ -765,7 +753,7 @@ class BuscadorChecklistsApp(ctk.CTk):
     self.actualizar_estado_selector_color()
 
     self.limpiar_log()
-    self.log("⚙️ Configuración actualizada correctamente.")
+    self.log("⚙ Configuración actualizada correctamente.")
     self.log(f" 📄 Excel: {self.ruta_excel}")
     self.log(f" 📁 Raíz PDFs: {self.carpeta_raiz_pdfs}")
     self.log(
@@ -919,10 +907,7 @@ class BuscadorChecklistsApp(ctk.CTk):
     self.limpiar_log()
     self.btn_imprimir.configure(state="disabled")
 
-    if self.pdf_fusionado_temp:
-      eliminar_temporal_seguro(self.pdf_fusionado_temp)
-    self.pdf_fusionado_temp = None
-
+    self.pdfs_seleccionados_lista = []
     self.log(f"🎯 No. Parte: '{no_parte_seleccionado}'\n")
 
     no_parte_norm = normalizar_texto_busqueda(no_parte_seleccionado)
@@ -967,62 +952,51 @@ class BuscadorChecklistsApp(ctk.CTk):
     )
     self.wait_window(ventana_modal)
 
-    pdfs_a_fusionar = ventana_modal.archivos_seleccionados
+    pdfs_a_imprimir = ventana_modal.archivos_seleccionados
 
-    if not pdfs_a_fusionar:
+    if not pdfs_a_imprimir:
       self.log("⚠️ Operación cancelada o no se seleccionó ningún PDF.")
       return
 
-    self.log(f"⚙ Fusionando {len(pdfs_a_fusionar)} PDFs seleccionados...")
-    try:
-      merger = PdfWriter()
-      for pdf in pdfs_a_fusionar:
-        merger.append(pdf)
-
-      temp_dir = tempfile.gettempdir()
-      ruta_salida_raw = os.path.join(temp_dir, "paquete_impresion_temp.pdf")
-
-      eliminar_temporal_seguro(ruta_salida_raw)
-
-      ruta_salida = normalizar_ruta_larga(ruta_salida_raw)
-      merger.write(ruta_salida)
-      merger.close()
-
-      ocultar_archivo_windows(ruta_salida)
-
-      self.pdf_fusionado_temp = ruta_salida
-      self.log(
-          f"🎉 Paquete con {len(pdfs_a_fusionar)} documento(s) consolidado con"
-          " éxito."
-      )
-      self.log("✔ Listo para enviar a la impresora.")
-      self.btn_imprimir.configure(state="normal")
-
-    except Exception as e:
-      self.log(f"❌ Error al consolidar los PDFs: {e}")
+    self.pdfs_seleccionados_lista = pdfs_a_imprimir
+    self.log(
+        f"🎉 {len(pdfs_a_imprimir)} checklist(s) listos para impresión"
+        " individual."
+    )
+    self.log("✔ Presione el botón para enviar a la cola de impresión.")
+    self.btn_imprimir.configure(state="normal")
 
   def imprimir_pdfs(self):
-    if not self.pdf_fusionado_temp or not os.path.exists(
-        self.pdf_fusionado_temp
+    if (
+        not hasattr(self, "pdfs_seleccionados_lista")
+        or not self.pdfs_seleccionados_lista
     ):
       self.log("❌ No hay ningún paquete preparado.")
       return
 
     impresora_sel = self.combo_impresora.get()
-    modo_color = self.combo_color.get() if self.permitir_color else "Blanco y Negro"
+    modo_color = (
+        self.combo_color.get() if self.permitir_color else "Blanco y Negro"
+    )
     es_color = modo_color == "Color"
 
     try:
       self.log(f"\n🖨 Enviando a: [{impresora_sel}]")
       self.log(
-          "   • Modo: Simplex (1 cara) |"
+          f"   • Documentos independientes: {len(self.pdfs_seleccionados_lista)}"
+      )
+      self.log(
+          "   • Modo: Dúplex inteligente por documento |"
           f' {"Color" if es_color else "Blanco y Negro"}'
       )
 
       mandar_a_imprimir_configurado(
-          self.pdf_fusionado_temp, impresora_sel, a_color=es_color
+          self.pdfs_seleccionados_lista, impresora_sel, a_color=es_color
       )
-      self.log("✔ Trabajo de impresión enviado correctamente a Windows.")
+      self.log(
+          "✔ Todos los documentos fueron enviados exitosamente a la cola de"
+          " Windows."
+      )
     except Exception as e:
       self.log(f"❌ Error al enviar a la impresora: {e}")
 
