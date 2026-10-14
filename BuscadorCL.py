@@ -25,7 +25,9 @@ def obtener_ruta_recurso(nombre_archivo):
   """Obtiene la ruta absoluta del recurso, compatible con desarrollo y PyInstaller (--onedir / --onefile)."""
   if hasattr(sys, "_MEIPASS"):
     return os.path.join(sys._MEIPASS, nombre_archivo)
-  return os.path.join(os.path.dirname(os.path.abspath(__file__)), nombre_archivo)
+  return os.path.join(
+      os.path.dirname(os.path.abspath(__file__)), nombre_archivo
+  )
 
 
 CONFIG_FILE = os.path.join(
@@ -35,7 +37,9 @@ PASSWORD_CONFIG = "Mike"
 ICON_PATH = obtener_ruta_recurso("logo2.ico")
 
 DEFAULTS = {
-    "RUTA_EXCEL": r"J:\1 OEE\Miguel Jacinto\Programas\BuscadorCL-Windows\Relación CL.xlsx",
+    "RUTA_EXCEL": (
+        r"J:\1 OEE\Miguel Jacinto\Programas\BuscadorCL-Windows\Relación CL.xlsx"
+    ),
     "CARPETA_CHECKLISTS": r"J:\CL SAP ENSAMBLE",
     "PERMITIR_COLOR": False,  # Por defecto bloqueado a solo Blanco y Negro
     "IMPRESORA_PREDETERMINADA": "",
@@ -176,7 +180,15 @@ def mandar_a_imprimir_configurado(lista_pdfs, nombre_impresora, a_color=True):
         rect = page.rect
         es_horizontal = rect.width > rect.height
 
-        pix = page.get_pixmap(dpi=max(dpi_x, 150))
+        # --- CORRECCIÓN DE ERROR: Overly large image ---
+        # Limitamos el DPI de renderizado a máximo 300 para no desbordar el buffer de la impresora
+        dpi_impresion = min(max(dpi_x, 150), 300)
+        try:
+          pix = page.get_pixmap(dpi=dpi_impresion)
+        except Exception:
+          # Rescate en DPI menor para planos o archivos gigantes
+          pix = page.get_pixmap(dpi=100)
+
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
         # Ajuste automático de orientación (Vertical vs Horizontal)
