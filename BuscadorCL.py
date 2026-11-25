@@ -24,12 +24,13 @@ ctk.set_default_color_theme("blue")
 
 
 def ocultar_consola():
-  """Oculta la ventana de consola en Windows sin usar --noconsole (evita falsos positivos)."""
+  """Desvincula y cierra la ventana de consola en Windows 10/11 sin activar falsos positivos."""
   if os.name == "nt":
     try:
       hwnd = ctypes.windll.kernel32.GetConsoleWindow()
       if hwnd != 0:
-        ctypes.windll.user32.ShowWindow(hwnd, 0)  # 0 = SW_HIDE
+        ctypes.windll.user32.ShowWindow(hwnd, 0)
+        ctypes.windll.kernel32.FreeConsole()
     except Exception:
       pass
 
