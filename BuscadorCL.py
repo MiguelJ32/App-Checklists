@@ -1365,6 +1365,5 @@ class BuscadorChecklistsApp(ctk.CTk):
 
 
 if __name__ == "__main__":
-  ocultar_consola()
   app = BuscadorChecklistsApp()
   app.mainloop()
